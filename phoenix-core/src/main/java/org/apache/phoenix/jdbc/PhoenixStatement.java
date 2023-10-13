@@ -43,6 +43,7 @@ import static org.apache.phoenix.monitoring.MetricType.UPSERT_FAILED_SQL_COUNTER
 import static org.apache.phoenix.monitoring.MetricType.UPSERT_SQL_COUNTER;
 import static org.apache.phoenix.monitoring.MetricType.UPSERT_SQL_QUERY_TIME;
 import static org.apache.phoenix.monitoring.MetricType.UPSERT_SUCCESS_SQL_COUNTER;
+import static org.apache.phoenix.query.QueryConstants.SYSTEM_SCHEMA_NAME;
 
 import java.io.File;
 import java.io.IOException;
@@ -661,10 +662,10 @@ public class PhoenixStatement implements PhoenixMonitoredStatement, SQLCloseable
 
 
     protected int executeMutation(final CompilableStatement stmt, final AuditQueryLogger queryLogger) throws SQLException {
-        return executeMutation(stmt, true, queryLogger);
+        return executeMutation(stmt, true, queryLogger, this.validateLastDdlTimestamp);
     }
 
-    private int executeMutation(final CompilableStatement stmt, final boolean doRetryOnMetaNotFoundError, final AuditQueryLogger queryLogger) throws SQLException {
+    private int executeMutation(final CompilableStatement stmt, final boolean doRetryOnMetaNotFoundError, final AuditQueryLogger queryLogger, boolean shouldValidateLastDDLTimestamp) throws SQLException {
         if (connection.isReadOnly()) {
             throw new SQLExceptionInfo.Builder(
                 SQLExceptionCode.READ_ONLY_CONNECTION).
@@ -679,11 +680,13 @@ public class PhoenixStatement implements PhoenixMonitoredStatement, SQLCloseable
                             public Integer call() throws SQLException {
                             boolean success = false;
                             String tableName = null;
+                            String schemaName = null;
                             boolean isUpsert = false;
                             boolean isAtomicUpsert = false;
                             boolean isDelete = false;
                             MutationState state = null;
                             MutationPlan plan = null;
+                            PTableKey key = null;
                             final long startExecuteMutationTime = EnvironmentEdgeManager.currentTimeMillis();
                             try {
                                 PhoenixConnection conn = getConnection();
@@ -699,6 +702,7 @@ public class PhoenixStatement implements PhoenixMonitoredStatement, SQLCloseable
                                 if (plan.getTargetRef() != null && plan.getTargetRef().getTable() != null) {
                                     if (!Strings.isNullOrEmpty(plan.getTargetRef().getTable().getPhysicalName().toString())) {
                                         tableName = plan.getTargetRef().getTable().getPhysicalName().toString();
+                                        schemaName = plan.getTargetRef().getTable().getSchemaName().toString();
                                     }
                                     if (plan.getTargetRef().getTable().isTransactional()) {
                                         state.startTransaction(plan.getTargetRef().getTable().getTransactionProvider());
@@ -708,6 +712,15 @@ public class PhoenixStatement implements PhoenixMonitoredStatement, SQLCloseable
                                 state.sendUncommitted(tableRefs);
                                 state.checkpointIfNeccessary(plan);
                                 checkIfDDLStatementandMutationState(stmt, state);
+
+                                if (stmt instanceof DMLStatement && !SYSTEM_SCHEMA_NAME.equals(schemaName)) {
+                                    key = new PTableKey(connection.getTenantId(), plan.getTargetRef().getTable().getName().toString());
+                                    if (shouldValidateLastDDLTimestamp && !state.isMetadataValidated(key)) {
+                                        validateLastDDLTimestamp(plan.getTargetRef(), true);
+                                        state.markMetadataValidated(key);
+                                    }
+                                }
+
                                 MutationState lastState = plan.execute();
                                 state.join(lastState);
                                 if (connection.getAutoCommit()) {
@@ -739,11 +752,20 @@ public class PhoenixStatement implements PhoenixMonitoredStatement, SQLCloseable
                                     }
                                     if (new MetaDataClient(connection).updateCache(connection.getTenantId(),
                                         e.getSchemaName(), e.getTableName(), true).wasUpdated()) {
-                                        return executeMutation(stmt, false, queryLogger);
+                                        return executeMutation(stmt, false, queryLogger, shouldValidateLastDDLTimestamp);
                                     }
                                 }
                                 throw e;
-                            }catch (RuntimeException e) {
+                            }
+                            catch (StaleMetadataCacheException e) {
+                                // force update client metadata cache for the table/view
+                                // this also updates the cache for all ancestors in case of a view
+                                new MetaDataClient(connection).updateCache(connection.getTenantId(), schemaName, tableName, true);
+                                state.markMetadataValidated(key);
+                                // skip last ddl timestamp validation in the retry
+                                return executeMutation(stmt, doRetryOnMetaNotFoundError, queryLogger, false);
+                            }
+                            catch (RuntimeException e) {
                                 // FIXME: Expression.evaluate does not throw SQLException
                                 // so this will unwrap throws from that.
                                 if (e.getCause() instanceof SQLException) {
