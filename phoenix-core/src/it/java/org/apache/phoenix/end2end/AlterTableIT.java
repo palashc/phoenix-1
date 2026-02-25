@@ -1885,19 +1885,19 @@ public class AlterTableIT extends ParallelStatsDisabledIT {
       }
       conn.createStatement().execute("ALTER TABLE " + tableName
         + " SET \"phoenix.max.lookback.age.seconds\"=100, REOPEN_REGIONS = true");
-      HRegion region = getUtility().getHBaseCluster().getRegions(hTableName).get(0);
+      HRegion region = TestUtil.getHRegionsWithRetry(getUtility(), hTableName).get(0);
       assertEquals("100", region.getTableDescriptor().getValue("phoenix.max.lookback.age.seconds"));
 
       conn.createStatement().execute("ALTER TABLE " + tableName
         + " SET \"phoenix.max.lookback.age.seconds\"=200, REOPEN_REGIONS = false");
-      region = getUtility().getHBaseCluster().getRegions(hTableName).get(0);
+      region = TestUtil.getHRegionsWithRetry(getUtility(), hTableName).get(0);
       assertEquals("100", region.getTableDescriptor().getValue("phoenix.max.lookback.age.seconds"));
       assertEquals("200",
         admin.getDescriptor(hTableName).getValue("phoenix.max.lookback.age.seconds"));
 
       admin.disableTable(hTableName);
       admin.enableTable(hTableName);
-      region = getUtility().getHBaseCluster().getRegions(hTableName).get(0);
+      region = TestUtil.getHRegionsWithRetry(getUtility(), hTableName).get(0);
       assertEquals("200", region.getTableDescriptor().getValue("phoenix.max.lookback.age.seconds"));
     }
   }

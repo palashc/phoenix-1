@@ -67,18 +67,18 @@ public class AlterIndexIT extends ParallelStatsDisabledIT {
 
       conn.createStatement().execute("ALTER INDEX " + indexName + " ON " + tableName
         + " ACTIVE SET \"phoenix.some.config\"=100 REOPEN_REGIONS = true");
-      HRegion region = getUtility().getHBaseCluster().getRegions(hTableName).get(0);
+      HRegion region = TestUtil.getHRegionsWithRetry(getUtility(), hTableName).get(0);
       Assert.assertEquals("100", region.getTableDescriptor().getValue("phoenix.some.config"));
 
       conn.createStatement().execute("ALTER INDEX " + indexName + " ON " + tableName
         + " ACTIVE SET \"phoenix.some.config\"=200 REOPEN_REGIONS = false");
-      region = getUtility().getHBaseCluster().getRegions(hTableName).get(0);
+      region = TestUtil.getHRegionsWithRetry(getUtility(), hTableName).get(0);
       Assert.assertEquals("100", region.getTableDescriptor().getValue("phoenix.some.config"));
       Assert.assertEquals("200", admin.getDescriptor(hTableName).getValue("phoenix.some.config"));
 
       admin.disableTable(hTableName);
       admin.enableTable(hTableName);
-      region = getUtility().getHBaseCluster().getRegions(hTableName).get(0);
+      region = TestUtil.getHRegionsWithRetry(getUtility(), hTableName).get(0);
       Assert.assertEquals("200", region.getTableDescriptor().getValue("phoenix.some.config"));
     }
   }
